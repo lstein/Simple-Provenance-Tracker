@@ -2,7 +2,6 @@ package Workflow::Provenance::Base;
 use strict;
 use warnings;
 
-use Workflow::Provenance;
 use Data::UUID;
 use DBI;
 
@@ -16,6 +15,8 @@ sub new {
     }
     return bless {dbh=>$dbh},ref $class || $class;
 }
+
+sub schema { return; }
 
 sub dbh { shift->{dbh} }
 

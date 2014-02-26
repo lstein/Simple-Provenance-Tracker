@@ -1,101 +1,70 @@
 package Workflow::Provenance::Dataset;
-use strict;
+
 use warnings;
-
 use base 'Workflow::Provenance::Base';
-use Workflow::Provenance;
-use Workflow::Provenance::Filetype;
-use DBI;
-use Carp 'croak';
 
-sub schema {
-    return <<END;
-create table if not exists dataset (   # should have an "owner"
-    id        int(10)    auto_increment primary key,
-    oid       char(36)   not null,
-    format    int(10),                    # foreign key into file_format table
-    path      varchar(65536) not null,    # can be a local path or a URL
-    unique index (oid)
-) engine=innodb;
+use overload '""' => 'oid',
+         fallback => 1;
 
-create table if not exists file_format (
-   id          int(10) auto_increment primary key,
-   oid         char(36)     not null,
-   ftype       varchar(255) not null,
-   suffix      varchar(32),
-   description text,
-   version     varchar(32),
-   unique index(oid)
-) engine=innodb;
-END
+sub new {
+    my $class = shift;
+    my ($oid,$dbh) = @_;
+    $class->SUPER::new();
+    return bless { oid=>$oid,
+		   dbh=>$dbh },ref $class || $class;
 }
 
-sub register_dataset {
+sub dbh { shift->{dbh} }
+sub oid { shift->{oid} }
+sub id  { 
     my $self = shift;
-    my ($format,$path) = @_;
-    my $format = $self->filetype($format)
-	or croak "unknown format $format";
-    my $dbh = $self->dbh;
-    if (my ($oid) = $dbh->selectrow_array("select oid from dataset where path=".DBI->quote($path))) {
-	croak "$path already exists under OID $oid";
-    }
-
-    local $dbh->{autocommit} = 1;
-    my $sth = $dbh->prepare_cached('insert into dataset (oid,format,path) values (?,?,?)');
-    my $oid = $self->new_oid;
-    $sth->execute($oid,$format,$path);
-    $sth->finish;
-    return $oid;
+    return $self->{id} ||= $self->_id();
 }
-
-sub dataset {
+sub format {
     my $self = shift;
-    my $path = shift;
-    my $sth = $self->dbh->prepare_cached(
-	$self->is_oid($path) ? 'select oid from dataset where oid=?'
-	                     : 'select oid from dataset where path=?'
-	);
-    $sth->execute($type);
-    my ($oid) = $sth->fetchrow_array or return;
-    $sth->finish;
-    return Workflow::Provenance::Dataset::File->new($oid,$self->dbh);
+    return $self->{format} ||= $self->_format();
 }
-
-sub register_filetype {
+sub path {
     my $self = shift;
-    my ($type,$suffix,$description,$version) = @_;
-    my $dbh = $self->dbh;
-    
-    local $dbh->{autocommit}=1;
-    my $sth = $dbh->prepare_cached('select oid from file_format where ftype=?');
-    if ($sth->execute($type)>0) {
-	my ($oid) = $sth->fetchrow_array;
+    if (@_) {
+	my $newpath = shift;
+	my $sth     = $self->dbh->prepare('update dataset set path=? where oid=?');
+	$sth->execute($newpath,$self->oid);
 	$sth->finish;
-	return $oid;
+	$self->{path} = $newpath;
     }
-    $sth->finish;
-
-    $sth = $dbh->prepare_cached('insert into file_format (oid,ftype,suffix,description,version) values(?,?,?,?,?)');
-    my $oid = $self->new_oid;
-    $sth->execute($oid,$type,$suffix,$description,$version);
-    $sth->finish;
-    return $oid;
+    return $self->{path} ||= $self->_path();
 }
-
-sub filetype {
+sub _id  {
     my $self = shift;
-    my $type = shift;
-    my $sth = $self->dbh->prepare_cached(
-	$self->is_oid($type) ? 'select id,oid,ftype,suffix,description,version from file_format where oid=?'
-	                     : 'select id,oid,ftype,suffix,description,version from file_format where ftype=?'
-	);
-    $sth->execute($type);
-    my ($id,$oid,$t,$suffix,$description,$version) = $sth->fetchrow_array or return;
+    my $sth = $self->dbh->prepare_cached('select id from dataset where oid=?');
+    my @h   = $sth->execute($self->{oid});
     $sth->finish;
-    return Workflow::Provenance::Filetype->new($id,$oid,$t,$suffix,$description,$version);
+    return $h[0];
 }
+sub _format {
+    my $self = shift;
+    my $sth  = $self->dbh->prepare_cached(<<END);
+select f.id,f.oid,ftype,suffix,description,version 
+       from file_format as f, dataset as d
+where f.id=d.format and d.oid=?
+END
+;
+    $sth->execute($self->oid);
+    my @h = $sth->fetchrow_array();
+    $sth->finish;
+    return unless @h;
+    return Workflow::Provenance::Filetype->new(@h);
+}
+sub _path {
+    my $self = shift;
+    my $sth  = $self->dbh->prepare('select path from dataset where oid=?');
+    $sth->execute($self->oid);
+    my ($p) = $sth->fetchrow_array;
+    $sth->finish;
+    return $p;
+}
+
 
 
 1;
-
-__DATA__
